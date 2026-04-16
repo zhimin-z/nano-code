@@ -2,6 +2,8 @@
 
 The smallest possible coding agent in Rust. ~185 LOC, single binary, zero fluff.
 
+<img width="1200" height="800" alt="nano-code" src="https://github.com/user-attachments/assets/51063025-c8c5-444a-8595-5442439675a1" />
+
 ## How it works
 
 ```mermaid
