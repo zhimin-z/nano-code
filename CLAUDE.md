@@ -1,13 +1,14 @@
-# nano-rust — CLAUDE.md
+# nano-code — CLAUDE.md
 
-Minimal Rust coding agent. Single file: `src/main.rs`. ~150 LOC.
+Minimal Rust coding agent. Single file: `src/main.rs`. ~185 LOC.
 
 ## Architecture
 
 - **No async** — uses `reqwest::blocking`. Keeps the code linear and readable.
-- **No abstraction layers** — one struct (`Msg`), four functions (`load_env`, `run_shell`, `call_api`, `main`).
-- **OpenAI-compatible API** — works with OpenRouter, direct Anthropic via compatible proxy, or any endpoint.
-- **Single tool** — `shell`: runs `sh -c <command>`, returns stdout or stderr+stdout on failure.
+- **No abstraction layers** — one struct (`Msg`), five functions (`load_env`, `shell`, `read_file`, `write_file`, `dispatch`, `call_api`, `main`).
+- **OpenAI-compatible API** — works with OpenRouter, or any `/chat/completions` endpoint.
+- **Three tools** — `shell`, `read_file`, `write_file`.
+- **Executor-mode system prompt** — forces the model to act (write files, run commands) rather than describe.
 
 ## Key design decisions
 
@@ -15,6 +16,7 @@ Minimal Rust coding agent. Single file: `src/main.rs`. ~150 LOC.
 - Tool results are pushed as individual `role: "tool"` messages with `tool_call_id` matching the request.
 - `.env` is parsed manually (no `dotenv` crate) — just `split_once('=')`.
 - Full conversation history is sent every request — no summarization, no truncation.
+- `system` field sent on every API call alongside `messages`.
 
 ## Files
 
@@ -27,7 +29,7 @@ Cargo.toml      # 3 dependencies
 
 ## Environment variables
 
-- `OPENROUTER_API_KEY` — checked first; fallback to `ANTHROPIC_API_KEY`
+- `OPENROUTER_API_KEY` — required
 - `INFERENCE_BASE_URL` — API base (default: `https://openrouter.ai/api/v1`)
 - `MODEL_NAME` — model string (default: `anthropic/claude-sonnet-4-6`)
 
@@ -35,9 +37,9 @@ Cargo.toml      # 3 dependencies
 
 ```bash
 cargo build --release
-./target/release/nano-rust
+./target/release/nano-code
 ```
 
 ## Extending
 
-To add a tool: add an entry to the `tools` array in `call_api()`, then add a match arm in the tool execution loop in `main()`. That's it.
+To add a tool: add an entry to the `tools` array in `call_api()`, add a match arm in `dispatch()`. That's it.

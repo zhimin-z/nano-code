@@ -1,12 +1,22 @@
-use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use std::fs;
 use std::io::{self, Write};
 use std::process::Command;
 
-const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
-const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
-const MAX_TOKENS: u32 = 8192;
+use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+const SYSTEM: &str = "\
+You are a coding agent running in a terminal. Your job is to complete tasks by \
+actually executing them — writing files, running commands, testing code, and \
+iterating until done. Never describe what you would do. Do it.
+
+Rules:
+- Always use tools to act. Read files before editing. Run code to verify it works.
+- When asked to build something: create the files, run them, fix errors, confirm success.
+- Be terse in text. Let tool output speak for itself.
+- Never say 'here is the code' and paste it. Write it to disk and run it.
+- You are done when the task works, not when you have described it.";
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Msg {
@@ -20,18 +30,17 @@ struct Msg {
 }
 
 fn load_env() {
-    if let Ok(s) = std::fs::read_to_string(".env") {
-        for line in s.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
-            if let Some((k, v)) = line.split_once('=') {
-                std::env::set_var(k.trim(), v.trim().trim_matches('"'));
-            }
+    let Ok(text) = fs::read_to_string(".env") else { return };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        if let Some((k, v)) = line.split_once('=') {
+            std::env::set_var(k.trim(), v.trim());
         }
     }
 }
 
-fn run_shell(cmd: &str) -> String {
+fn shell(cmd: &str) -> String {
     match Command::new("sh").arg("-c").arg(cmd).output() {
         Ok(o) => {
             let out = String::from_utf8_lossy(&o.stdout);
@@ -39,65 +48,129 @@ fn run_shell(cmd: &str) -> String {
             if o.status.success() {
                 if out.trim().is_empty() { "(no output)".into() } else { out.trim().to_string() }
             } else {
-                format!("ERROR: {}{}", err.trim(), out.trim())
+                format!("ERROR:\n{}{}", err.trim(), out.trim())
             }
         }
         Err(e) => format!("EXEC_ERROR: {e}"),
     }
 }
 
-fn call_api(client: &Client, key: &str, base_url: &str, model: &str, messages: &[Msg]) -> Value {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+fn read_file(path: &str) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| format!("ERROR: {e}"))
+}
+
+fn write_file(path: &str, content: &str) -> String {
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            let _ = fs::create_dir_all(dir);
+        }
+    }
+    match fs::write(path, content) {
+        Ok(_) => format!("wrote {path}"),
+        Err(e) => format!("ERROR: {e}"),
+    }
+}
+
+fn dispatch(name: &str, args: &Value) -> String {
+    match name {
+        "shell"      => shell(args["command"].as_str().unwrap_or("")),
+        "read_file"  => read_file(args["path"].as_str().unwrap_or("")),
+        "write_file" => write_file(
+            args["path"].as_str().unwrap_or(""),
+            args["content"].as_str().unwrap_or(""),
+        ),
+        _ => format!("unknown tool: {name}"),
+    }
+}
+
+fn call_api(client: &Client, url: &str, key: &str, model: &str, messages: &[Msg]) -> Value {
+    let tools = json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "shell",
+                "description": "Run a shell command. Returns stdout, or stderr on failure.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"}
+                    },
+                    "required": ["command"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file from disk.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write content to a file. Creates parent directories if needed.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        }
+    ]);
+
+    let body = json!({
+        "model": model,
+        "system": SYSTEM,
+        "max_tokens": 8192,
+        "tools": tools,
+        "messages": messages
+    });
+
     client
-        .post(&url)
+        .post(url)
         .header("Authorization", format!("Bearer {key}"))
         .header("Content-Type", "application/json")
-        .json(&json!({
-            "model": model,
-            "max_tokens": MAX_TOKENS,
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "shell",
-                    "description": "Run a shell command and return stdout/stderr.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string"}
-                        },
-                        "required": ["command"]
-                    }
-                }
-            }],
-            "messages": messages
-        }))
+        .json(&body)
         .send()
         .expect("request failed")
         .json::<Value>()
-        .expect("json parse failed")
+        .expect("parse failed")
 }
 
 fn main() {
     load_env();
 
     let key = std::env::var("OPENROUTER_API_KEY")
-        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-        .expect("set OPENROUTER_API_KEY or ANTHROPIC_API_KEY");
+        .expect("OPENROUTER_API_KEY not set");
     let base_url = std::env::var("INFERENCE_BASE_URL")
-        .unwrap_or_else(|_| DEFAULT_BASE_URL.into());
+        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
     let model = std::env::var("MODEL_NAME")
-        .unwrap_or_else(|_| DEFAULT_MODEL.into());
+        .unwrap_or_else(|_| "anthropic/claude-sonnet-4-6".to_string());
+    let api_url = format!("{base_url}/chat/completions");
 
     let client = Client::new();
     let mut messages: Vec<Msg> = Vec::new();
 
-    println!("nano-rust | {model} | empty line to quit\n");
+    println!("nano-code | {model} | empty line to quit\n");
 
     loop {
         print!("> ");
         io::stdout().flush().unwrap();
+
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        if io::stdin().read_line(&mut input).is_err() { break; }
         let input = input.trim().to_string();
         if input.is_empty() { break; }
 
@@ -108,44 +181,61 @@ fn main() {
             tool_call_id: None,
         });
 
+        // Agent loop
         loop {
-            let resp = call_api(&client, &key, &base_url, &model, &messages);
-            let choice = &resp["choices"][0];
-            let msg = &choice["message"];
-            let finish = choice["finish_reason"].as_str().unwrap_or("");
+            let resp = call_api(&client, &api_url, &key, &model, &messages);
 
-            // Print text content
+            let finish = resp["choices"][0]["finish_reason"].as_str().unwrap_or("").to_string();
+            let msg = &resp["choices"][0]["message"];
+
+            // Print any text content
             if let Some(text) = msg["content"].as_str() {
-                if !text.is_empty() { println!("\n{text}\n"); }
+                if !text.trim().is_empty() {
+                    println!("\n{text}\n");
+                }
             }
 
-            // Push assistant message (preserve tool_calls if present)
-            messages.push(Msg {
-                role: "assistant".into(),
-                content: msg["content"].as_str().map(|s| json!(s)),
-                tool_calls: msg.get("tool_calls").cloned(),
-                tool_call_id: None,
-            });
+            if finish == "tool_calls" {
+                let tool_calls = msg["tool_calls"].clone();
 
-            if finish != "tool_calls" { break; }
-
-            // Execute each tool call, push tool result messages
-            let tool_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
-            for tc in &tool_calls {
-                let id = tc["id"].as_str().unwrap_or("").to_string();
-                let args: Value = serde_json::from_str(
-                    tc["function"]["arguments"].as_str().unwrap_or("{}")
-                ).unwrap_or(json!({}));
-                let cmd = args["command"].as_str().unwrap_or("");
-                println!("  $ {cmd}");
-                let out = run_shell(cmd);
-                println!("  {out}\n");
+                // Push assistant message
                 messages.push(Msg {
-                    role: "tool".into(),
-                    content: Some(json!(out)),
-                    tool_calls: None,
-                    tool_call_id: Some(id),
+                    role: "assistant".into(),
+                    content: msg["content"].as_str().map(|s| json!(s)),
+                    tool_calls: Some(tool_calls.clone()),
+                    tool_call_id: None,
                 });
+
+                // Execute each tool and push result
+                for tc in tool_calls.as_array().unwrap_or(&vec![]) {
+                    let id = tc["id"].as_str().unwrap_or("").to_string();
+                    let name = tc["function"]["name"].as_str().unwrap_or("");
+                    let args: Value = serde_json::from_str(
+                        tc["function"]["arguments"].as_str().unwrap_or("{}")
+                    ).unwrap_or(json!({}));
+
+                    eprintln!("\x1b[2m  [{name}] {}\x1b[0m",
+                        tc["function"]["arguments"].as_str().unwrap_or(""));
+
+                    let result = dispatch(name, &args);
+                    eprintln!("\x1b[2m  => {}\x1b[0m\n", result.lines().next().unwrap_or(""));
+
+                    messages.push(Msg {
+                        role: "tool".into(),
+                        content: Some(json!(result)),
+                        tool_calls: None,
+                        tool_call_id: Some(id),
+                    });
+                }
+            } else {
+                // end_turn or other — push assistant message and break
+                messages.push(Msg {
+                    role: "assistant".into(),
+                    content: msg["content"].as_str().map(|s| json!(s)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+                break;
             }
         }
     }
