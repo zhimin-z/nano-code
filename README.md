@@ -1,10 +1,26 @@
 # nano-code
 
-The smallest possible coding agent in Rust. ~185 LOC, single binary, zero fluff.
+<div align="center">
+
+**The smallest practical coding agent in Rust**  
+Single binary • ~185 LOC • blocking HTTP • no framework ceremony
 
 <img width="1200" height="800" alt="nano-code" src="https://github.com/user-attachments/assets/51063025-c8c5-444a-8595-5442439675a1" />
 
-## How it works
+</div>
+
+---
+
+## ✨ Why nano-code
+
+- **Tiny by design**: nearly everything lives in `src/main.rs`
+- **Action-first agent behavior**: built to execute, not narrate
+- **OpenAI-compatible API**: works with OpenRouter or any compatible `/chat/completions` endpoint
+- **Easy to extend**: add a tool in two spots (`call_api()` + `dispatch()`)
+
+---
+
+## 🧠 How it works
 
 ```mermaid
 flowchart TD
@@ -17,55 +33,77 @@ flowchart TD
     D -->|no - end_turn| G[print response]
 ```
 
-### Three moving parts
+### Core runtime pieces
 
-**1. `load_env()`** — reads `.env` on startup, sets env vars. No crate needed.
+1. **`load_env()`**  
+   Reads `.env` on startup and sets environment variables (manual parser, no dotenv crate).
 
-**2. `call_api()`** — POST to any OpenAI-compatible `/chat/completions` endpoint with three tools registered: `shell`, `read_file`, `write_file`. Sends the full conversation history each turn.
+2. **`call_api()`**  
+   Sends full conversation history to an OpenAI-compatible `/chat/completions` endpoint and registers 3 tools: `shell`, `read_file`, `write_file`.
 
-**3. `main()` agent loop** — two nested loops:
-- Outer: reads your prompt, appends as `user` message, enters inner loop.
-- Inner: calls API → if `finish_reason == "tool_calls"`, executes each tool and appends `tool` result messages, then calls API again. Breaks when `finish_reason == "end_turn"` (or anything else).
+3. **`main()` agent loop**  
+   - Outer loop: reads your prompt and appends a `user` message.
+   - Inner loop: calls model → executes tool calls → appends `tool` messages → repeats until end turn.
 
-### Executor-mode system prompt
+---
 
-The agent is instructed to act, not describe:
+## ⚙️ Executor-mode behavior
 
-> "Never describe what you would do. Do it."
+The system prompt explicitly pushes the model to execute work:
+
+> "Never describe what you would do. Do it."  
 > "When asked to build something: create the files, run them, fix errors, confirm success."
 
-### Message flow (OpenAI format)
+---
 
-```
+## 📨 Message flow (OpenAI format)
+
+```text
 user:      { role: "user",      content: "your prompt" }
 assistant: { role: "assistant", tool_calls: [{id, function: {name, arguments}}] }
 tool:      { role: "tool",      tool_call_id: id, content: "cmd output" }
 assistant: { role: "assistant", content: "final answer" }
 ```
 
-The model decides when to run tools and when to stop. You just provide the goal.
+The model decides when to call tools and when to stop.
 
-## Installation
+---
+
+## Quick start
+
+### 1) Install Rust and clone
 
 ```bash
-# Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 
-# Clone the repository
 git clone https://github.com/Engineering4AI/nano-code
 cd nano-code
 ```
 
-## Setup
+### 2) Configure environment
 
 ```bash
 cp .env.example .env
-# edit .env with your key
+# edit .env with your API key
+```
+
+### 3) Run
+
+```bash
 cargo run
 ```
 
-## Configuration (`.env`)
+### 4) Build release binary
+
+```bash
+cargo build --release
+./target/release/nano-code
+```
+
+---
+
+## 🔧 Configuration (`.env`)
 
 | Variable | Default | Description |
 |---|---|---|
@@ -73,29 +111,28 @@ cargo run
 | `INFERENCE_BASE_URL` | `https://openrouter.ai/api/v1` | Any OpenAI-compatible base URL |
 | `MODEL_NAME` | `anthropic/claude-sonnet-4-6` | Model identifier |
 
-## Build
+---
 
-```bash
-cargo build --release
-./target/release/nano-code
-```
-
-## Dependencies
+## 📦 Dependencies
 
 | Crate | Purpose |
 |---|---|
 | `reqwest` (blocking) | HTTP client |
 | `serde` + `serde_json` | JSON serialization |
 
-Nothing else.
+No additional framework layers.
 
-## See also
+---
 
-- [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) — alternative implementation in Python
+## 🔗 See also
 
-## Citation
+- [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) — Python alternative
 
-If you use nano-code in your research, please cite:
+---
+
+## 📚 Citation
+
+If you use nano-code in research, please cite:
 
 ```bibtex
 @software{nano_code2026,
